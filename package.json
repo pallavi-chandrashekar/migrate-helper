@@ -16,5 +16,13 @@
   "dependencies": {
     "acorn": "^8.16.0",
     "acorn-walk": "^8.3.5"
+  },
+  "devDependencies": {
+    "@commitlint/cli": "^20.4.3",
+    "@commitlint/config-conventional": "^20.4.3",
+    "husky": "^9.1.7"
+  },
+  "scripts": {
+    "prepare": "husky"
   }
 }
