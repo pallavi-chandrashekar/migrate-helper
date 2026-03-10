@@ -1,36 +1,118 @@
 # migrate-helper
 
-A CLI tool that helps you migrate between library versions by comparing API documentation fetched via [context-hub](https://github.com/andrewyng/context-hub), with AST-based code scanning and multi-source fallback.
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Node.js Version](https://img.shields.io/badge/node-%3E%3D18.17-brightgreen)](https://nodejs.org)
+[![Conventional Commits](https://img.shields.io/badge/Conventional%20Commits-1.0.0-blue.svg)](https://conventionalcommits.org)
 
-## How it works
+> A CLI tool that detects breaking API changes between library versions and pinpoints affected code in your project — powered by [context-hub](https://github.com/andrewyng/context-hub).
 
-1. Fetches documentation for both the old and new library versions using `chub get`, with automatic fallback to npm registry, GitHub releases, and local changelogs
-2. Diffs the docs using structured API signature extraction and fuzzy section matching to identify removed, changed, renamed, and added APIs
-3. Scans your project files using AST parsing (acorn for JS/TS, python3 ast for Python) to precisely locate affected API usage
-4. Outputs a migration report with file locations, signature-level change details, and suggested next steps
+---
 
-## Prerequisites
+## Table of Contents
 
-- Node.js >= 18.17
-- [context-hub](https://github.com/andrewyng/context-hub) CLI installed globally (recommended, but not required — fallback sources are available):
-  ```bash
-  npm install -g @aisuite/chub
-  ```
-- Python 3 (optional, for Python AST parsing when using `--lang py`)
+- [Problem Statement](#problem-statement)
+- [Quick Start](#quick-start)
+- [Architecture](#architecture)
+- [Installation](#installation)
+- [Usage](#usage)
+- [Sample Output](#sample-output)
+- [How It Works](#how-it-works)
+- [Performance and Limits](#performance-and-limits)
+- [Security](#security)
+- [Troubleshooting](#troubleshooting)
+- [Dependencies](#dependencies)
+- [Project Structure](#project-structure)
+- [Contributing](#contributing)
+- [License](#license)
+
+---
+
+## Problem Statement
+
+Library upgrades are one of the highest-friction tasks in software engineering. Engineers face:
+
+- **No single source of truth** — breaking changes are scattered across changelogs, release notes, and migration guides
+- **Manual code auditing** — grep-based searches for affected API usage produce false positives and miss method calls, imports, and constructors
+- **Wasted time** — senior engineers spend hours reading diffs that a tool could summarize in seconds
+
+**migrate-helper** solves this by automating the three hardest parts of a migration: finding what changed, finding where your code is affected, and telling you exactly what to fix.
+
+---
+
+## Quick Start
+
+```bash
+# Install
+git clone https://github.com/pallavi-chandrashekar/migrate-helper.git
+cd migrate-helper && npm install && npm link
+
+# Run
+migrate-helper openai --from 3.0 --to 4.0 --dir ./your-project
+```
+
+That's it. You'll get a full migration report in your terminal.
+
+---
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                       migrate-helper                        │
+├─────────────┬─────────────┬───────────────┬─────────────────┤
+│  fetch-docs │  diff-docs  │ scan-project  │     report      │
+│             │             │               │                 │
+│  chub ─────►│  Section    │  JS/TS: acorn │  Terminal (ANSI)│
+│  npm ──────►│  splitting  │  Python: ast  │  JSON output    │
+│  GitHub ───►│  Fuzzy match│  Fallback:    │                 │
+│  Local ────►│  Signature  │  string match │                 │
+│  changelog  │  extraction │               │                 │
+└─────────────┴─────────────┴───────────────┴─────────────────┘
+
+Flow:
+  1. Fetch docs (old ver) ──┐
+                            ├──► Diff ──► Extract affected APIs ──► Scan project ──► Report
+  2. Fetch docs (new ver) ──┘
+```
+
+**Data source fallback chain:**
+
+```
+chub (curated docs)
+  └─ fail ──► npm registry (package metadata, exports)
+                └─ fail ──► GitHub releases (release notes)
+                              └─ fail ──► Local CHANGELOG.md
+                                            └─ fail ──► Error with clear message
+```
+
+---
 
 ## Installation
 
+### Prerequisites
+
+| Requirement | Required | Notes |
+|-------------|----------|-------|
+| Node.js >= 18.17 | Yes | Uses `parseArgs`, `recursive readdir` |
+| [context-hub](https://github.com/andrewyng/context-hub) CLI | No | Recommended. Fallback sources available if missing |
+| Python 3 | No | Only needed for `--lang py` AST parsing |
+
+### Install from source
+
 ```bash
-git clone <repo-url> && cd migrate-helper
+git clone https://github.com/pallavi-chandrashekar/migrate-helper.git
+cd migrate-helper
 npm install
-npm link
+npm link   # Makes 'migrate-helper' available globally
 ```
 
-Or run directly without installing globally:
+### Run without installing
 
 ```bash
 node bin/migrate-helper.js <library> --from <old> --to <new>
 ```
+
+---
 
 ## Usage
 
@@ -45,30 +127,39 @@ migrate-helper <library> --from <oldVersion> --to <newVersion> [options]
 | `--from <version>` | Old/current library version | *(required)* |
 | `--to <version>` | New/target library version | *(required)* |
 | `--dir <path>` | Project directory to scan | Current directory |
-| `--lang <js\|py>` | Language variant for docs | `js` |
-| `--json` | Output as JSON instead of terminal report | `false` |
+| `--lang <js\|py>` | Language variant for docs and scanning | `js` |
+| `--json` | Output as JSON (for CI/CD pipelines) | `false` |
 | `--help` | Show help message | |
+
+### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | Success — report generated |
+| `1` | Error — missing args, docs not found, or scan failure |
 
 ### Examples
 
 ```bash
-# Compare OpenAI SDK v3 to v4, scan current project
+# Basic migration check
 migrate-helper openai --from 3.0 --to 4.0
 
-# Compare Stripe SDK versions, scan a specific directory
+# Scan a specific project directory
 migrate-helper stripe --from 2.0 --to 3.0 --dir ./my-app
 
-# Get Python-specific docs
+# Python project
 migrate-helper openai --from 0.28 --to 1.0 --lang py
 
-# Output as JSON for piping to other tools
+# JSON output for CI pipelines
 migrate-helper openai --from 3.0 --to 4.0 --json | jq '.changes.removed'
 
-# Works even without chub installed (falls back to npm/GitHub)
+# Works without chub installed (auto-fallback to npm/GitHub)
 migrate-helper express --from 4.0.0 --to 5.0.0
 ```
 
-### Sample output
+---
+
+## Sample Output
 
 ```
 ──────────────────────────────────────────────────────────
@@ -120,65 +211,211 @@ migrate-helper express --from 4.0.0 --to 5.0.0
      for the full updated documentation
 ```
 
-## How it works under the hood
+---
 
-### Structured documentation diffing
+## How It Works
+
+### 1. Structured documentation diffing
 
 The tool goes beyond simple text comparison:
 
-- **Section-level splitting** — Markdown is split by headings (`#` through `####`), and each section is compared independently
-- **Fuzzy section matching** — Renamed sections are detected using Dice coefficient similarity on headings (threshold: 0.6), so `"Client Setup"` matches `"Client Configuration"`
+- **Section-level splitting** — Markdown is split by headings (`#` through `####`), each section compared independently
+- **Fuzzy section matching** — Renamed sections are detected using Dice coefficient similarity (threshold: 0.6), so `"Client Setup"` matches `"Client Configuration"`
 - **API signature extraction** — Function declarations, class definitions, and method calls are parsed from code blocks with their parameter lists, enabling detection of:
   - Parameter additions/removals
-  - Function renames
+  - Function/method renames
   - Signature changes
-- **Keyword scanning** — Searches for migration-relevant terms (`deprecated`, `removed`, `breaking`, `renamed`, `replaced by`, `no longer`, `migration`, `upgrade`, `incompatible`)
+- **Keyword scanning** — Searches for migration-relevant terms: `deprecated`, `removed`, `breaking`, `renamed`, `replaced by`, `no longer`, `migration`, `upgrade`, `incompatible`
 
-### AST-based project scanning
+### 2. AST-based project scanning
 
-Instead of simple string matching, the tool parses your source code into an Abstract Syntax Tree:
+Instead of string matching (which produces false positives), the tool parses source code into an Abstract Syntax Tree:
 
-- **JavaScript/TypeScript** — Uses [acorn](https://github.com/acornjs/acorn) parser with TypeScript stripping. Identifies:
-  - Function calls (`authenticate(token)`)
-  - Method calls (`client.connect(opts)`)
-  - Import declarations (`import { Foo } from 'bar'`)
-  - Constructor usage (`new OldClient(config)`)
-- **Python** — Shells out to `python3 ast` module for native parsing. Identifies the same categories of usage.
-- **Fallback** — If AST parsing fails (e.g., syntax errors, exotic syntax), gracefully falls back to string matching. The report clearly labels each match as `(ast)` or `(string match)` so you know which results to verify manually.
+| Language | Parser | Identifies |
+|----------|--------|------------|
+| JavaScript/TypeScript | [acorn](https://github.com/acornjs/acorn) with TS stripping | Function calls, method calls, imports, constructors |
+| Python | `python3 ast` module (shell) | Function calls, method calls, imports |
 
-### Multi-source documentation fallback
+**Fallback behavior:** If AST parsing fails (syntax errors, unsupported syntax), the tool falls back to string matching. The report labels each match as `(ast)` or `(string match)` so you know confidence level.
 
-When `chub` doesn't have a library or version, the tool automatically tries alternative sources:
+### 3. Multi-source documentation fallback
 
-1. **chub** (context-hub registry) — primary source, curated docs
-2. **npm registry** — fetches package metadata, exports, and dependency info from `registry.npmjs.org`
-3. **GitHub releases** — fetches release notes via the GitHub API, auto-detecting the repo from npm metadata
-4. **Local changelog** — checks for `CHANGELOG.md`, `CHANGES.md`, or `HISTORY.md` in your project directory
+| Priority | Source | What it provides |
+|----------|--------|-----------------|
+| 1 | chub (context-hub) | Curated, structured API docs |
+| 2 | npm registry | Package metadata, exports, dependencies |
+| 3 | GitHub releases | Release notes, auto-detected from npm metadata |
+| 4 | Local changelog | `CHANGELOG.md`, `CHANGES.md`, or `HISTORY.md` in project dir |
 
-The report header shows which source was used for each version (e.g., `Data sources: old=chub, new=github`), and any warnings about fallback usage.
+The report header shows which source was used: `Data sources: old=chub, new=github`.
+
+---
+
+## Performance and Limits
+
+| Dimension | Expectation |
+|-----------|-------------|
+| **Doc fetching** | Both versions fetched in parallel. 30s timeout per request. |
+| **Diffing** | Near-instant for typical API docs (< 1MB markdown). |
+| **Project scanning** | Handles hundreds of source files in under a second. Skips `node_modules`, `.git`, `dist`, `build`, `__pycache__`, `.next`, `.nuxt`, `coverage`, `.cache`, `vendor`. |
+| **Memory** | Files read sequentially, not buffered in bulk. Safe for large projects. |
+
+### Known limits
+
+- **Fuzzy matching threshold (0.6)** may miss sections with very different headings or match unrelated sections with similar names. Tune based on results.
+- **TypeScript stripping is regex-based**, not a full TS parser. Complex generic types, decorators, or exotic TS patterns may cause acorn to fall back to string matching.
+- **Python AST requires `python3` on PATH.** If unavailable, Python files fall back to string matching silently.
+- **npm/GitHub fallback provides less detail** than chub. Package metadata doesn't contain API signatures — diffing will rely on structural changes in exports and dependencies.
+
+---
+
+## Security
+
+- **No credentials stored or transmitted.** The tool reads local files and makes unauthenticated HTTPS requests to public APIs (registry.npmjs.org, api.github.com).
+- **No code execution.** Project files are parsed (read-only AST), never evaluated or executed.
+- **No data exfiltration.** The `--json` flag outputs to stdout only. No telemetry, no analytics, no network calls beyond doc fetching.
+- **Dependency surface is minimal:** 2 runtime dependencies (`acorn`, `acorn-walk`), both widely audited and maintained by the acorn team.
+
+---
+
+## Troubleshooting
+
+### `chub is not installed`
+
+```
+Error: chub is not installed. Run: npm install -g @aisuite/chub
+```
+
+chub is optional. If you don't want to install it, the tool will automatically fall back to npm registry and GitHub releases. This message appears as a warning, not a blocker, unless all fallback sources also fail.
+
+### `No docs returned for <library>@<version>`
+
+The version doesn't exist in the chub registry. The tool will try fallback sources. If all fail, verify:
+- The library name matches what's on npm (e.g., `openai`, not `openai-sdk`)
+- The version string matches an actual published version (e.g., `4.0.0`, not `4`)
+
+### AST parsing falls back to string matching
+
+You'll see `(string match)` labels in the report. Common causes:
+- TypeScript with complex generics or decorators
+- Non-standard syntax (e.g., proposal-stage JS features)
+- Files with syntax errors
+
+This is by design — string matching is a safe fallback. Verify these matches manually.
+
+### `python3: command not found`
+
+Python AST parsing requires `python3` on your PATH. Install Python 3 or use `--lang js` if you don't need Python scanning.
+
+### Empty report / no breaking changes
+
+Possible causes:
+- The two versions have identical documentation in the registry
+- The library's docs don't use standard heading/code block conventions
+- The fallback source (npm/GitHub) doesn't contain enough detail for meaningful diffing
+
+Try `--json` to inspect the raw diff data.
+
+---
 
 ## Dependencies
 
+### Runtime
+
+| Package | Version | Purpose | Maintainer |
+|---------|---------|---------|------------|
+| [acorn](https://github.com/acornjs/acorn) | ^8.16.0 | JavaScript AST parsing | acorn team |
+| [acorn-walk](https://github.com/acornjs/acorn/tree/master/acorn-walk) | ^8.3.5 | AST tree traversal | acorn team |
+
+### Dev
+
 | Package | Purpose |
 |---------|---------|
-| [acorn](https://github.com/acornjs/acorn) | JavaScript AST parsing |
-| [acorn-walk](https://github.com/acornjs/acorn/tree/master/acorn-walk) | AST tree traversal |
+| [@commitlint/cli](https://commitlint.js.org/) | Commit message linting |
+| [@commitlint/config-conventional](https://commitlint.js.org/) | Conventional commit rules |
+| [husky](https://typicode.github.io/husky/) | Git hooks |
 
-Everything else uses Node.js built-ins (`node:util`, `node:fs`, `node:https`, `node:child_process`).
+Everything else uses Node.js built-ins: `node:util`, `node:fs/promises`, `node:https`, `node:child_process`, `node:path`.
 
-## Project structure
+---
+
+## Project Structure
 
 ```
 migrate-helper/
   package.json
+  commitlint.config.js        # Conventional commit rules
+  .github/
+    workflows/
+      release-please.yml      # Automated versioning and releases
+  .husky/
+    commit-msg                 # Commit message validation hook
   bin/
-    migrate-helper.js     # CLI entry point and argument parsing
+    migrate-helper.js          # CLI entry point — arg parsing, orchestration
   lib/
-    fetch-docs.js         # Doc fetching with chub → npm → GitHub → local fallback
-    diff-docs.js          # Structured diffing with signature extraction and fuzzy matching
-    scan-project.js       # AST-based project scanning (acorn + python3 ast)
-    report.js             # Terminal and JSON report formatter
+    fetch-docs.js              # Doc fetching: chub → npm → GitHub → local fallback
+    diff-docs.js               # Structured diffing: section split, fuzzy match, signature extraction
+    scan-project.js            # AST scanning: acorn (JS/TS), python3 ast, string fallback
+    report.js                  # Output: terminal (ANSI color) and JSON formats
 ```
+
+---
+
+## Contributing
+
+This project uses [Conventional Commits](https://www.conventionalcommits.org/) and automated releases.
+
+### Commit message format
+
+Every commit must follow the conventional format — enforced by commitlint + husky:
+
+```
+<type>(<scope>): <description>
+
+[optional body]
+
+[optional footer]
+```
+
+| Type | Description | Version bump |
+|------|-------------|--------------|
+| `feat` | New feature | Minor (0.1.0 → 0.2.0) |
+| `fix` | Bug fix | Patch (0.1.0 → 0.1.1) |
+| `feat!` | Breaking change | Major (0.1.0 → 1.0.0) |
+| `docs` | Documentation only | None |
+| `refactor` | Code change, no behavior change | None |
+| `perf` | Performance improvement | None |
+| `test` | Adding or updating tests | None |
+| `build` | Build system or dependencies | None |
+| `ci` | CI/CD configuration | None |
+| `chore` | Maintenance tasks | None |
+
+```bash
+git commit -m "feat(scan): add Go AST parsing"     # ✓
+git commit -m "fix(diff): handle empty code blocks" # ✓
+git commit -m "fixed stuff"                         # ✗ rejected
+```
+
+### Release process
+
+Releases are automated via [release-please](https://github.com/googleapis/release-please):
+
+1. Merge commits to `main` with conventional messages
+2. Release Please opens a **Release PR** — bumps version, generates changelog
+3. Review and merge the Release PR when ready
+4. Release Please creates a **GitHub Release** with tag and changelog
+
+No manual version bumping, tagging, or changelog writing required.
+
+### Development setup
+
+```bash
+git clone https://github.com/pallavi-chandrashekar/migrate-helper.git
+cd migrate-helper
+npm install    # Installs dependencies + sets up husky hooks
+```
+
+---
 
 ## License
 
